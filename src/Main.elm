@@ -15,18 +15,10 @@ import Random
 import Random.Graph
 import Svg exposing (..)
 import Svg.Attributes as Attr exposing (..)
+import Task
 import Time exposing (Time)
 import Visualization.Force as Force exposing (State)
-
-
-screenWidth : Float
-screenWidth =
-    990
-
-
-screenHeight : Float
-screenHeight =
-    504
+import Window
 
 
 type Msg
@@ -37,6 +29,7 @@ type Msg
     | GenerateNewTree
     | AddRandomTree (Graph () ())
     | ChangeGeneratorParam String
+    | WindowSizeChanged Window.Size
 
 
 type alias Model =
@@ -44,6 +37,7 @@ type alias Model =
     , graph : ForceDirectedGraph
     , simulation : Force.State NodeId
     , nodeCountToGenerate : Int
+    , windowSize : Window.Size
     }
 
 
@@ -64,12 +58,17 @@ type alias ForceDirectedGraph =
 
 init : ( Model, Cmd Msg )
 init =
-    ( initialModel, Cmd.none )
+    ( initialModel, Task.perform WindowSizeChanged Window.size )
 
 
 initialModel : Model
 initialModel =
-    Model Nothing Graph.empty (Force.simulation []) 10
+    { drag = Nothing
+    , graph = Graph.empty
+    , simulation = Force.simulation []
+    , nodeCountToGenerate = 10
+    , windowSize = { width = 1024, height = 768 }
+    }
 
 
 setGraph : Graph () () -> Model -> Model
@@ -89,7 +88,7 @@ setGraph graph model =
         forces =
             [ Force.links <| List.map link <| Graph.edges graph
             , Force.manyBody <| List.map .id <| Graph.nodes graph
-            , Force.center (screenWidth / 2) (screenHeight / 2)
+            , Force.center (toFloat model.windowSize.width / 2) (toFloat model.windowSize.height / 2)
             ]
     in
         { model | drag = Nothing, graph = newGraph, simulation = Force.simulation forces }
@@ -136,22 +135,31 @@ updateGraphWithList =
 
 
 updateModel : Msg -> Model -> Model
-updateModel msg ({ drag, graph, simulation, nodeCountToGenerate } as model) =
+updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as model) =
     case msg of
         Tick t ->
             let
                 ( newState, list ) =
                     Force.tick simulation <| List.map .label <| Graph.nodes graph
+
+                newGraph =
+                    updateGraphWithList graph list
             in
                 case drag of
                     Nothing ->
-                        Model drag (updateGraphWithList graph list) newState nodeCountToGenerate
+                        { model
+                            | graph = newGraph
+                            , simulation = newState
+                        }
 
                     Just { current, index } ->
-                        Model drag (Graph.update index (Maybe.map (updateNode current)) (updateGraphWithList graph list)) newState nodeCountToGenerate
+                        { model
+                            | graph = newGraph |> Graph.update index (Maybe.map (updateNode current))
+                            , simulation = newState
+                        }
 
         DragStart index xy ->
-            Model (Just (Drag xy xy index)) graph simulation nodeCountToGenerate
+            { model | drag = Just (Drag xy xy index) }
 
         DragAt xy ->
             case drag of
@@ -160,17 +168,18 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate } as model) =
                         (Graph.update index (Maybe.map (updateNode xy)) graph)
                         (Force.reheat simulation)
                         nodeCountToGenerate
+                        windowSize
 
                 Nothing ->
-                    Model Nothing graph simulation nodeCountToGenerate
+                    model
 
         DragEnd xy ->
             case drag of
                 Just { start, index } ->
-                    Model Nothing (Graph.update index (Maybe.map (updateNode xy)) graph) simulation nodeCountToGenerate
+                    Model Nothing (Graph.update index (Maybe.map (updateNode xy)) graph) simulation nodeCountToGenerate windowSize
 
                 Nothing ->
-                    Model Nothing graph simulation nodeCountToGenerate
+                    model
 
         GenerateNewTree ->
             model
@@ -178,12 +187,15 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate } as model) =
         ChangeGeneratorParam nodeCountStr ->
             let
                 newNodeCountToGenerate =
-                    String.toInt nodeCountStr |> Result.withDefault 0
+                    String.toInt nodeCountStr |> Result.withDefault 0 |> Basics.clamp 0 1000
             in
                 { model | nodeCountToGenerate = newNodeCountToGenerate }
 
         AddRandomTree graph ->
             setGraph graph model
+
+        WindowSizeChanged newSize ->
+            { model | windowSize = newSize }
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -202,17 +214,20 @@ update msg model =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    case model.drag of
-        Nothing ->
-            -- This allows us to save resources, as if the simulation is done, there is no point in subscribing
-            -- to the rAF.
-            if Force.isCompleted model.simulation then
-                Sub.none
-            else
-                AnimationFrame.times Tick
+    let
+        dynamicSubscriptions =
+            case model.drag of
+                Nothing ->
+                    -- This allows us to save resources, as if the simulation is done, there is no point in subscribing to the rAF.
+                    if Force.isCompleted model.simulation then
+                        Sub.none
+                    else
+                        AnimationFrame.times Tick
 
-        Just _ ->
-            Sub.batch [ Mouse.moves DragAt, Mouse.ups DragEnd, AnimationFrame.times Tick ]
+                Just _ ->
+                    Sub.batch [ Mouse.moves DragAt, Mouse.ups DragEnd, AnimationFrame.times Tick ]
+    in
+        Sub.batch [ Window.resizes WindowSizeChanged, dynamicSubscriptions ]
 
 
 onMouseDown : NodeId -> Attribute Msg
@@ -243,7 +258,7 @@ linkElement graph edge =
 nodeElement : Node Entity -> Svg Msg
 nodeElement node =
     circle
-        [ r "2.5"
+        [ r "3"
         , fill "#000"
         , onMouseDown node.id
         , cx (toString node.label.x)
@@ -280,7 +295,7 @@ viewControls nodeCountToGenerate =
 
 viewGraph : Model -> Svg Msg
 viewGraph model =
-    svg [ width (toString screenWidth ++ "px"), height (toString screenHeight ++ "px") ]
+    svg [ width (toString model.windowSize.width ++ "px"), height (toString model.windowSize.height ++ "px") ]
         [ g [ class "links" ] <| List.map (linkElement model.graph) <| Graph.edges model.graph
         , g [ class "nodes" ] <| List.map nodeElement <| Graph.nodes model.graph
         ]
