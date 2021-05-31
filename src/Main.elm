@@ -16,7 +16,7 @@ import Json.Decode as Decode exposing (Decoder)
 import Random
 import Random.Graph
 import Svg exposing (..)
-import Svg.Attributes exposing (..)
+import Svg.Attributes as SA exposing (..)
 import Svg.Events as SE
 import Task
 
@@ -25,7 +25,7 @@ type Msg
     = DragStart NodeId Position
     | DragAt Position
     | DragEnd Position
-    | ScaleDown
+    | Zoom Float
     | Tick
     | GenerateNewTree
     | AddRandomTree (Graph () ())
@@ -59,6 +59,11 @@ mousePosition =
         (Decode.field "pageY" Decode.int)
 
 
+mouseWheelDecoder : Decoder Float
+mouseWheelDecoder =
+    Decode.field "deltaY" Decode.float
+
+
 type alias Drag =
     { start : Position
     , current : Position
@@ -68,20 +73,6 @@ type alias Drag =
 
 type alias Entity =
     Force.Entity NodeId {}
-
-
-initialRadius : Float
-initialRadius =
-    10
-
-
-initialAngle : Float
-initialAngle =
-    pi * (3 - sqrt 5)
-
-
-
--- TODO get rid of this
 
 
 entity : Int -> Entity
@@ -99,6 +90,16 @@ entity index =
     , vy = 0.0
     , id = index
     }
+
+
+initialRadius : Float
+initialRadius =
+    10
+
+
+initialAngle : Float
+initialAngle =
+    pi * (3 - sqrt 5)
 
 
 type alias ForceDirectedGraph =
@@ -252,12 +253,12 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
         GotWindowSize newSize ->
             { model | windowSize = newSize }
 
-        ScaleDown ->
-            { model | graph = scaleDown 0.75 model.windowSize model.graph }
+        Zoom scaleFactor ->
+            { model | graph = scaleGraph scaleFactor model.windowSize model.graph }
 
 
-scaleDown : Float -> WindowSize -> ForceDirectedGraph -> ForceDirectedGraph
-scaleDown scaleFactor windowSize graph =
+scaleGraph : Float -> WindowSize -> ForceDirectedGraph -> ForceDirectedGraph
+scaleGraph scaleFactor windowSize graph =
     let
         cx =
             windowSize.width / 2
@@ -376,16 +377,27 @@ viewControls nodeCountToGenerate =
             ]
             []
         , span [] [ text " nodes " ]
-        , button [ onClick GenerateNewTree ] [ text "Genereate" ]
-        , button [ onClick ScaleDown ] [ text "Scale down" ]
+        , button [ onClick GenerateNewTree ] [ text "Go!" ]
         ]
 
 
 viewGraph : Model -> Svg Msg
 viewGraph model =
     svg
-        [ width (String.fromFloat model.windowSize.width ++ "px")
-        , height (String.fromFloat model.windowSize.height ++ "px")
+        [ width "100vw"
+        , height "100vh"
+        , SA.style "position:absolute;top:0;z-index:-1;width:100vw"
+        , SE.on "wheel" <|
+            Decode.map
+                (\deltaY ->
+                    Zoom <|
+                        if deltaY < 0 then
+                            0.8
+
+                        else
+                            1.2
+                )
+                mouseWheelDecoder
         ]
         [ g [ class "links" ] <| List.map (linkElement model.graph) <| Graph.edges model.graph
         , g [ class "nodes" ] <| List.map nodeElement <| Graph.nodes model.graph
