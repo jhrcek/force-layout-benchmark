@@ -25,6 +25,7 @@ type Msg
     = DragStart NodeId Position
     | DragAt Position
     | DragEnd Position
+    | ScaleDown
     | Tick
     | GenerateNewTree
     | AddRandomTree (Graph () ())
@@ -42,7 +43,9 @@ type alias Model =
 
 
 type alias WindowSize =
-    { width : Int, height : Int }
+    { width : Float
+    , height : Float
+    }
 
 
 type alias Position =
@@ -64,7 +67,38 @@ type alias Drag =
 
 
 type alias Entity =
-    Force.Entity NodeId { value : String }
+    Force.Entity NodeId {}
+
+
+initialRadius : Float
+initialRadius =
+    10
+
+
+initialAngle : Float
+initialAngle =
+    pi * (3 - sqrt 5)
+
+
+
+-- TODO get rid of this
+
+
+entity : Int -> Entity
+entity index =
+    let
+        radius =
+            sqrt (0.5 + toFloat index) * initialRadius
+
+        angle =
+            toFloat index * initialAngle
+    in
+    { x = radius * cos angle
+    , y = radius * sin angle
+    , vx = 0.0
+    , vy = 0.0
+    , id = index
+    }
 
 
 type alias ForceDirectedGraph =
@@ -77,8 +111,8 @@ init _ =
     , Task.perform
         (\{ viewport } ->
             GotWindowSize
-                { width = round viewport.width
-                , height = round viewport.height
+                { width = viewport.width
+                , height = viewport.height
                 }
         )
         getViewport
@@ -99,15 +133,14 @@ setGraph : Graph () () -> Model -> Model
 setGraph graph model =
     let
         newGraph =
-            graph
-                |> initNodeLabels
-                |> Graph.mapContexts
-                    (\({ node } as ctx) ->
-                        { node = { id = node.id, label = Force.entity node.id node.label }
-                        , incoming = ctx.incoming
-                        , outgoing = ctx.outgoing
-                        }
-                    )
+            Graph.mapContexts
+                (\({ node } as ctx) ->
+                    { node = { id = node.id, label = entity node.id }
+                    , incoming = ctx.incoming
+                    , outgoing = ctx.outgoing
+                    }
+                )
+                graph
 
         link { from, to } =
             ( from, to )
@@ -115,25 +148,14 @@ setGraph graph model =
         forces =
             [ Force.links <| List.map link <| Graph.edges graph
             , Force.manyBody <| List.map .id <| Graph.nodes graph
-            , Force.center (toFloat model.windowSize.width / 2) (toFloat model.windowSize.height / 2)
+            , Force.center (model.windowSize.width / 2) (model.windowSize.height / 2)
             ]
     in
-    { model | drag = Nothing, graph = newGraph, simulation = Force.simulation forces }
-
-
-
-{- Set node Ids as node labels -}
-
-
-initNodeLabels : Graph () () -> Graph String ()
-initNodeLabels =
-    Graph.mapContexts
-        (\({ node } as ctx) ->
-            { node = { id = node.id, label = String.fromInt node.id }
-            , incoming = ctx.incoming
-            , outgoing = ctx.outgoing
-            }
-        )
+    { model
+        | drag = Nothing
+        , graph = newGraph
+        , simulation = Force.simulation forces
+    }
 
 
 updateNode : Position -> NodeContext Entity () -> NodeContext Entity ()
@@ -142,7 +164,11 @@ updateNode pos nodeCtx =
         nodeValue =
             nodeCtx.node.label
     in
-    updateContextWithValue nodeCtx { nodeValue | x = toFloat pos.x, y = toFloat pos.y }
+    updateContextWithValue nodeCtx
+        { nodeValue
+            | x = toFloat pos.x
+            , y = toFloat pos.y
+        }
 
 
 updateContextWithValue : NodeContext Entity () -> Entity -> NodeContext Entity ()
@@ -226,6 +252,28 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
         GotWindowSize newSize ->
             { model | windowSize = newSize }
 
+        ScaleDown ->
+            { model | graph = scaleDown 0.75 model.windowSize model.graph }
+
+
+scaleDown : Float -> WindowSize -> ForceDirectedGraph -> ForceDirectedGraph
+scaleDown scaleFactor windowSize graph =
+    let
+        cx =
+            windowSize.width / 2
+
+        cy =
+            windowSize.height / 2
+    in
+    Graph.mapNodes
+        (\ent ->
+            { ent
+                | x = scaleFactor * (ent.x - cx) + cx
+                , y = scaleFactor * (ent.y - cy) + cy
+            }
+        )
+        graph
+
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
@@ -262,7 +310,7 @@ subscriptions model =
                         ]
     in
     Sub.batch
-        [ Browser.Events.onResize (\w h -> GotWindowSize { width = w, height = h })
+        [ Browser.Events.onResize (\w h -> GotWindowSize { width = toFloat w, height = toFloat h })
         , dynamicSubscriptions
         ]
 
@@ -271,10 +319,10 @@ linkElement : ForceDirectedGraph -> Edge () -> Svg msg
 linkElement graph edge =
     let
         source =
-            Maybe.withDefault (Force.entity 0 "") <| Maybe.map (.node >> .label) <| Graph.get edge.from graph
+            lookupEntity edge.from graph
 
         target =
-            Maybe.withDefault (Force.entity 0 "") <| Maybe.map (.node >> .label) <| Graph.get edge.to graph
+            lookupEntity edge.to graph
     in
     line
         [ strokeWidth "1"
@@ -287,6 +335,13 @@ linkElement graph edge =
         []
 
 
+lookupEntity : NodeId -> ForceDirectedGraph -> Entity
+lookupEntity nodeId =
+    Graph.get nodeId
+        >> Maybe.map (.node >> .label)
+        >> Maybe.withDefault (entity 0)
+
+
 nodeElement : Node Entity -> Svg Msg
 nodeElement node =
     circle
@@ -296,7 +351,7 @@ nodeElement node =
         , cx (String.fromFloat node.label.x)
         , cy (String.fromFloat node.label.y)
         ]
-        [ Svg.title [] [ text node.label.value ] ]
+        [ Svg.title [] [ text <| String.fromInt node.id ] ]
 
 
 view : Model -> Html Msg
@@ -321,13 +376,17 @@ viewControls nodeCountToGenerate =
             ]
             []
         , span [] [ text " nodes " ]
-        , button [ onClick GenerateNewTree ] [ text "Go!" ]
+        , button [ onClick GenerateNewTree ] [ text "Genereate" ]
+        , button [ onClick ScaleDown ] [ text "Scale down" ]
         ]
 
 
 viewGraph : Model -> Svg Msg
 viewGraph model =
-    svg [ width (String.fromInt model.windowSize.width ++ "px"), height (String.fromInt model.windowSize.height ++ "px") ]
+    svg
+        [ width (String.fromFloat model.windowSize.width ++ "px")
+        , height (String.fromFloat model.windowSize.height ++ "px")
+        ]
         [ g [ class "links" ] <| List.map (linkElement model.graph) <| Graph.edges model.graph
         , g [ class "nodes" ] <| List.map nodeElement <| Graph.nodes model.graph
         ]
