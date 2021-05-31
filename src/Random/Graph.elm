@@ -3,11 +3,11 @@ module Random.Graph exposing (randomTree)
 import Graph exposing (Edge, Graph, Node)
 import Random exposing (Generator)
 import Random.List exposing (choose, shuffle)
-import Random.Extra
-import Random
 
 
-{-| Based on "On Generating Random Network Structures: Trees", ICCS 2003, LNCS 2658, pp. 879-887, 2003. (<http://dx.doi.org/10.1007/3-540-44862-4_95>)
+{-| Based on "On Generating Random Network Structures: Trees",
+ICCS 2003, LNCS 2658, pp. 879-887, 2003.
+(<http://dx.doi.org/10.1007/3-540-44862-4_95>)
 -}
 randomTree : Int -> Generator (Graph () ())
 randomTree nodeCount =
@@ -15,8 +15,8 @@ randomTree nodeCount =
         nodes =
             List.map (\id -> Node id ()) <| List.range 0 (nodeCount - 1)
     in
-        edgeListGenerator nodeCount
-            |> Random.map (\edges -> Graph.fromNodesAndEdges nodes edges)
+    edgeListGenerator nodeCount
+        |> Random.map (\edges -> Graph.fromNodesAndEdges nodes edges)
 
 
 
@@ -49,13 +49,13 @@ edgeListGenerator nodeCount =
                             (\( maybeSource, _ ) ->
                                 case maybeSource of
                                     Nothing ->
-                                        Debug.crash "edgeListGenerator: nodeCount wasn't positive"
+                                        Debug.todo "edgeListGenerator: nodeCount wasn't positive"
 
                                     Just source ->
                                         source
                             )
             in
-                randomSourceGen |> Random.map (\source -> ( targetNode :: sourceNodes, Edge source targetNode () :: edges ))
+            randomSourceGen |> Random.map (\source -> ( targetNode :: sourceNodes, Edge source targetNode () :: edges ))
 
         sourceNodesAndEdgesGenerator : Generator ( List Graph.NodeId, List (Edge ()) )
         sourceNodesAndEdgesGenerator =
@@ -64,20 +64,20 @@ edgeListGenerator nodeCount =
                     (\ids ->
                         case ids of
                             [] ->
-                                Debug.crash "edgeListGenerator: nodeCount wasn't positive"
+                                Debug.todo "edgeListGenerator: nodeCount wasn't positive"
 
                             firstId :: remainingIds ->
                                 foldM step ( [ firstId ], [] ) remainingIds
                     )
     in
-        sourceNodesAndEdgesGenerator |> Random.map (\( sourceNodes, edges ) -> edges)
+    sourceNodesAndEdgesGenerator |> Random.map (\( _ {- sourceNodes -}, edges ) -> edges)
 
 
 foldM : (b -> a -> Generator a) -> a -> List b -> Generator a
 foldM f seed list =
     case list of
         [] ->
-            Random.Extra.constant seed
+            Random.constant seed
 
         b :: bs ->
             f b seed |> Random.andThen (\newSeed -> foldM f newSeed bs)

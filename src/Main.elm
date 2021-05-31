@@ -4,32 +4,32 @@ module Main exposing (main)
 using randomly generated Trees.
 -}
 
-import AnimationFrame
+import Browser
+import Browser.Dom exposing (getViewport)
+import Browser.Events
+import Force
 import Graph exposing (Edge, Graph, Node, NodeContext, NodeId)
 import Html exposing (Html, button, div, input, span)
-import Html.Attributes as HA exposing (size, value)
-import Html.Events exposing (on, onClick, onInput)
-import Json.Decode as Decode
-import Mouse exposing (Position)
+import Html.Attributes as HA exposing (value)
+import Html.Events exposing (onClick, onInput)
+import Json.Decode as Decode exposing (Decoder)
 import Random
 import Random.Graph
 import Svg exposing (..)
-import Svg.Attributes as Attr exposing (..)
+import Svg.Attributes exposing (..)
+import Svg.Events as SE
 import Task
-import Time exposing (Time)
-import Visualization.Force as Force exposing (State)
-import Window
 
 
 type Msg
     = DragStart NodeId Position
     | DragAt Position
     | DragEnd Position
-    | Tick Time
+    | Tick
     | GenerateNewTree
     | AddRandomTree (Graph () ())
     | ChangeGeneratorParam String
-    | WindowSizeChanged Window.Size
+    | GotWindowSize WindowSize
 
 
 type alias Model =
@@ -37,8 +37,23 @@ type alias Model =
     , graph : ForceDirectedGraph
     , simulation : Force.State NodeId
     , nodeCountToGenerate : Int
-    , windowSize : Window.Size
+    , windowSize : WindowSize
     }
+
+
+type alias WindowSize =
+    { width : Int, height : Int }
+
+
+type alias Position =
+    { x : Int, y : Int }
+
+
+mousePosition : Decoder Position
+mousePosition =
+    Decode.map2 Position
+        (Decode.field "pageX" Decode.int)
+        (Decode.field "pageY" Decode.int)
 
 
 type alias Drag =
@@ -56,9 +71,18 @@ type alias ForceDirectedGraph =
     Graph Entity ()
 
 
-init : ( Model, Cmd Msg )
-init =
-    ( initialModel, Task.perform WindowSizeChanged Window.size )
+init : () -> ( Model, Cmd Msg )
+init _ =
+    ( initialModel
+    , Task.perform
+        (\{ viewport } ->
+            GotWindowSize
+                { width = round viewport.width
+                , height = round viewport.height
+                }
+        )
+        getViewport
+    )
 
 
 initialModel : Model
@@ -79,7 +103,10 @@ setGraph graph model =
                 |> initNodeLabels
                 |> Graph.mapContexts
                     (\({ node } as ctx) ->
-                        { ctx | node = { label = Force.entity node.id node.label, id = node.id } }
+                        { node = { id = node.id, label = Force.entity node.id node.label }
+                        , incoming = ctx.incoming
+                        , outgoing = ctx.outgoing
+                        }
                     )
 
         link { from, to } =
@@ -91,7 +118,7 @@ setGraph graph model =
             , Force.center (toFloat model.windowSize.width / 2) (toFloat model.windowSize.height / 2)
             ]
     in
-        { model | drag = Nothing, graph = newGraph, simulation = Force.simulation forces }
+    { model | drag = Nothing, graph = newGraph, simulation = Force.simulation forces }
 
 
 
@@ -99,12 +126,14 @@ setGraph graph model =
 
 
 initNodeLabels : Graph () () -> Graph String ()
-initNodeLabels inputGraph =
+initNodeLabels =
     Graph.mapContexts
         (\({ node } as ctx) ->
-            { ctx | node = { node | label = toString node.id } }
+            { node = { id = node.id, label = String.fromInt node.id }
+            , incoming = ctx.incoming
+            , outgoing = ctx.outgoing
+            }
         )
-        inputGraph
 
 
 updateNode : Position -> NodeContext Entity () -> NodeContext Entity ()
@@ -113,7 +142,7 @@ updateNode pos nodeCtx =
         nodeValue =
             nodeCtx.node.label
     in
-        updateContextWithValue nodeCtx { nodeValue | x = toFloat pos.x, y = toFloat pos.y }
+    updateContextWithValue nodeCtx { nodeValue | x = toFloat pos.x, y = toFloat pos.y }
 
 
 updateContextWithValue : NodeContext Entity () -> Entity -> NodeContext Entity ()
@@ -122,7 +151,7 @@ updateContextWithValue nodeCtx value =
         node =
             nodeCtx.node
     in
-        { nodeCtx | node = { node | label = value } }
+    { nodeCtx | node = { node | label = value } }
 
 
 updateGraphWithList : ForceDirectedGraph -> List Entity -> ForceDirectedGraph
@@ -131,13 +160,13 @@ updateGraphWithList =
         graphUpdater value =
             Maybe.map (\ctx -> updateContextWithValue ctx value)
     in
-        List.foldr (\node graph -> Graph.update node.id (graphUpdater node) graph)
+    List.foldr (\node graph -> Graph.update node.id (graphUpdater node) graph)
 
 
 updateModel : Msg -> Model -> Model
 updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as model) =
     case msg of
-        Tick t ->
+        Tick ->
             let
                 ( newState, list ) =
                     Force.tick simulation <| List.map .label <| Graph.nodes graph
@@ -145,18 +174,18 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
                 newGraph =
                     updateGraphWithList graph list
             in
-                case drag of
-                    Nothing ->
-                        { model
-                            | graph = newGraph
-                            , simulation = newState
-                        }
+            case drag of
+                Nothing ->
+                    { model
+                        | graph = newGraph
+                        , simulation = newState
+                    }
 
-                    Just { current, index } ->
-                        { model
-                            | graph = newGraph |> Graph.update index (Maybe.map (updateNode current))
-                            , simulation = newState
-                        }
+                Just { current, index } ->
+                    { model
+                        | graph = newGraph |> Graph.update index (Maybe.map (updateNode current))
+                        , simulation = newState
+                    }
 
         DragStart index xy ->
             { model | drag = Just (Drag xy xy index) }
@@ -175,7 +204,7 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
 
         DragEnd xy ->
             case drag of
-                Just { start, index } ->
+                Just { index } ->
                     Model Nothing (Graph.update index (Maybe.map (updateNode xy)) graph) simulation nodeCountToGenerate windowSize
 
                 Nothing ->
@@ -187,14 +216,14 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
         ChangeGeneratorParam nodeCountStr ->
             let
                 newNodeCountToGenerate =
-                    String.toInt nodeCountStr |> Result.withDefault 0 |> Basics.clamp 0 1000
+                    String.toInt nodeCountStr |> Maybe.withDefault 0 |> Basics.clamp 0 1000
             in
-                { model | nodeCountToGenerate = newNodeCountToGenerate }
+            { model | nodeCountToGenerate = newNodeCountToGenerate }
 
-        AddRandomTree graph ->
-            setGraph graph model
+        AddRandomTree gr ->
+            setGraph gr model
 
-        WindowSizeChanged newSize ->
+        GotWindowSize newSize ->
             { model | windowSize = newSize }
 
 
@@ -206,7 +235,7 @@ update msg model =
                 generationCommand =
                     Random.generate AddRandomTree (Random.Graph.randomTree model.nodeCountToGenerate)
             in
-                ( model, generationCommand )
+            ( model, generationCommand )
 
         otherMsg ->
             ( updateModel otherMsg model, Cmd.none )
@@ -221,18 +250,21 @@ subscriptions model =
                     -- This allows us to save resources, as if the simulation is done, there is no point in subscribing to the rAF.
                     if Force.isCompleted model.simulation then
                         Sub.none
+
                     else
-                        AnimationFrame.times Tick
+                        Browser.Events.onAnimationFrame (always Tick)
 
                 Just _ ->
-                    Sub.batch [ Mouse.moves DragAt, Mouse.ups DragEnd, AnimationFrame.times Tick ]
+                    Sub.batch
+                        [ Browser.Events.onAnimationFrame (always Tick)
+                        , Browser.Events.onMouseMove (Decode.map DragAt mousePosition)
+                        , Browser.Events.onMouseUp (Decode.map DragEnd mousePosition)
+                        ]
     in
-        Sub.batch [ Window.resizes WindowSizeChanged, dynamicSubscriptions ]
-
-
-onMouseDown : NodeId -> Attribute Msg
-onMouseDown index =
-    on "mousedown" (Decode.map (DragStart index) Mouse.position)
+    Sub.batch
+        [ Browser.Events.onResize (\w h -> GotWindowSize { width = w, height = h })
+        , dynamicSubscriptions
+        ]
 
 
 linkElement : ForceDirectedGraph -> Edge () -> Svg msg
@@ -244,15 +276,15 @@ linkElement graph edge =
         target =
             Maybe.withDefault (Force.entity 0 "") <| Maybe.map (.node >> .label) <| Graph.get edge.to graph
     in
-        line
-            [ strokeWidth "1"
-            , stroke "#aaa"
-            , x1 (toString source.x)
-            , y1 (toString source.y)
-            , x2 (toString target.x)
-            , y2 (toString target.y)
-            ]
-            []
+    line
+        [ strokeWidth "1"
+        , stroke "#aaa"
+        , x1 (String.fromFloat source.x)
+        , y1 (String.fromFloat source.y)
+        , x2 (String.fromFloat target.x)
+        , y2 (String.fromFloat target.y)
+        ]
+        []
 
 
 nodeElement : Node Entity -> Svg Msg
@@ -260,9 +292,9 @@ nodeElement node =
     circle
         [ r "3"
         , fill "#000"
-        , onMouseDown node.id
-        , cx (toString node.label.x)
-        , cy (toString node.label.y)
+        , SE.on "mousedown" (Decode.map (DragStart node.id) mousePosition)
+        , cx (String.fromFloat node.label.x)
+        , cy (String.fromFloat node.label.y)
         ]
         [ Svg.title [] [ text node.label.value ] ]
 
@@ -283,8 +315,8 @@ viewControls nodeCountToGenerate =
             [ type_ "number"
             , HA.min "0"
             , HA.max "1000"
-            , value <| toString nodeCountToGenerate
-            , HA.style [ ( "width", "3em" ) ]
+            , value <| String.fromInt nodeCountToGenerate
+            , HA.style "width" "3em"
             , onInput ChangeGeneratorParam
             ]
             []
@@ -295,15 +327,15 @@ viewControls nodeCountToGenerate =
 
 viewGraph : Model -> Svg Msg
 viewGraph model =
-    svg [ width (toString model.windowSize.width ++ "px"), height (toString model.windowSize.height ++ "px") ]
+    svg [ width (String.fromInt model.windowSize.width ++ "px"), height (String.fromInt model.windowSize.height ++ "px") ]
         [ g [ class "links" ] <| List.map (linkElement model.graph) <| Graph.edges model.graph
         , g [ class "nodes" ] <| List.map nodeElement <| Graph.nodes model.graph
         ]
 
 
-main : Program Never Model Msg
+main : Program () Model Msg
 main =
-    Html.program
+    Browser.element
         { init = init
         , view = view
         , update = update
