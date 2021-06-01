@@ -13,6 +13,7 @@
             "elm/random": "1.0.0",
             "elm/svg": "1.0.1",
             "elm-community/graph": "6.0.0",
+            "elm-community/intdict": "3.0.0",
             "elm-community/random-extra": "3.2.0",
             "gampleman/elm-visualization": "2.3.0"
         },
@@ -23,7 +24,6 @@
             "elm/time": "1.0.0",
             "elm/url": "1.0.0",
             "elm/virtual-dom": "1.0.2",
-            "elm-community/intdict": "3.0.0",
             "elm-community/list-extra": "8.3.0",
             "folkertdev/elm-deque": "3.0.1",
             "folkertdev/one-true-path-experiment": "6.0.0",

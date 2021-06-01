@@ -9,13 +9,14 @@ import Browser.Dom exposing (getViewport)
 import Browser.Events
 import Force
 import Graph exposing (Edge, Graph, Node, NodeContext, NodeId)
-import Html exposing (Html, button, div, input, span)
+import Html exposing (Html)
 import Html.Attributes as HA exposing (value)
 import Html.Events exposing (onClick, onInput)
 import Json.Decode as Decode exposing (Decoder)
+import Pruefer exposing (prueferSequence)
 import Random
 import Random.Graph
-import Svg exposing (..)
+import Svg exposing (Svg)
 import Svg.Attributes as SA exposing (..)
 import Svg.Events as SE
 import Task
@@ -29,6 +30,7 @@ type Msg
     | Tick
     | GenerateNewTree
     | AddRandomTree (Graph () ())
+    | ToggleNodeLabels
     | ChangeGeneratorParam String
     | GotWindowSize WindowSize
 
@@ -37,8 +39,10 @@ type alias Model =
     { drag : Maybe Drag
     , graph : ForceDirectedGraph
     , simulation : Force.State NodeId
+    , showNodeLabels : Bool
     , nodeCountToGenerate : Int
     , windowSize : WindowSize
+    , pruefer : List NodeId
     }
 
 
@@ -49,7 +53,9 @@ type alias WindowSize =
 
 
 type alias Position =
-    { x : Int, y : Int }
+    { x : Int
+    , y : Int
+    }
 
 
 mousePosition : Decoder Position
@@ -125,8 +131,10 @@ initialModel =
     { drag = Nothing
     , graph = Graph.empty
     , simulation = Force.simulation []
+    , showNodeLabels = False
     , nodeCountToGenerate = 10
     , windowSize = { width = 1024, height = 768 }
+    , pruefer = []
     }
 
 
@@ -156,6 +164,7 @@ setGraph graph model =
         | drag = Nothing
         , graph = newGraph
         , simulation = Force.simulation forces
+        , pruefer = prueferSequence newGraph
     }
 
 
@@ -191,17 +200,17 @@ updateGraphWithList =
 
 
 updateModel : Msg -> Model -> Model
-updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as model) =
+updateModel msg model =
     case msg of
         Tick ->
             let
                 ( newState, list ) =
-                    Force.tick simulation <| List.map .label <| Graph.nodes graph
+                    Force.tick model.simulation <| List.map .label <| Graph.nodes model.graph
 
                 newGraph =
-                    updateGraphWithList graph list
+                    updateGraphWithList model.graph list
             in
-            case drag of
+            case model.drag of
                 Nothing ->
                     { model
                         | graph = newGraph
@@ -218,21 +227,24 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
             { model | drag = Just (Drag xy xy index) }
 
         DragAt xy ->
-            case drag of
+            case model.drag of
                 Just { start, index } ->
-                    Model (Just (Drag start xy index))
-                        (Graph.update index (Maybe.map (updateNode xy)) graph)
-                        (Force.reheat simulation)
-                        nodeCountToGenerate
-                        windowSize
+                    { model
+                        | drag = Just (Drag start xy index)
+                        , graph = Graph.update index (Maybe.map (updateNode xy)) model.graph
+                        , simulation = Force.reheat model.simulation
+                    }
 
                 Nothing ->
                     model
 
         DragEnd xy ->
-            case drag of
+            case model.drag of
                 Just { index } ->
-                    Model Nothing (Graph.update index (Maybe.map (updateNode xy)) graph) simulation nodeCountToGenerate windowSize
+                    { model
+                        | drag = Nothing
+                        , graph = Graph.update index (Maybe.map (updateNode xy)) model.graph
+                    }
 
                 Nothing ->
                     model
@@ -255,6 +267,9 @@ updateModel msg ({ drag, graph, simulation, nodeCountToGenerate, windowSize } as
 
         Zoom scaleFactor ->
             { model | graph = scaleGraph scaleFactor model.windowSize model.graph }
+
+        ToggleNodeLabels ->
+            { model | showNodeLabels = not model.showNodeLabels }
 
 
 scaleGraph : Float -> WindowSize -> ForceDirectedGraph -> ForceDirectedGraph
@@ -325,7 +340,7 @@ linkElement graph edge =
         target =
             lookupEntity edge.to graph
     in
-    line
+    Svg.line
         [ strokeWidth "1"
         , stroke "#aaa"
         , x1 (String.fromFloat source.x)
@@ -343,47 +358,91 @@ lookupEntity nodeId =
         >> Maybe.withDefault (entity 0)
 
 
-nodeElement : Node Entity -> Svg Msg
-nodeElement node =
-    circle
+labeledNode : Node Entity -> Svg Msg
+labeledNode node =
+    Svg.g [ SE.on "mousedown" (Decode.map (DragStart node.id) mousePosition) ]
+        [ Svg.circle
+            [ r "10"
+            , fill "black"
+            , cx (String.fromFloat node.label.x)
+            , cy (String.fromFloat node.label.y)
+            ]
+            []
+        , Svg.text_
+            [ x (String.fromFloat node.label.x)
+            , y (String.fromFloat node.label.y)
+            , dominantBaseline "central"
+            , textAnchor "middle"
+            , SA.fill "white"
+
+            --   , SA.stroke "white"
+            ]
+            [ Svg.text <| String.fromInt node.id ]
+        ]
+
+
+simpleNode : Node Entity -> Svg Msg
+simpleNode node =
+    Svg.circle
         [ r "3"
         , fill "#000"
         , SE.on "mousedown" (Decode.map (DragStart node.id) mousePosition)
         , cx (String.fromFloat node.label.x)
         , cy (String.fromFloat node.label.y)
         ]
-        [ Svg.title [] [ text <| String.fromInt node.id ] ]
+        [ Svg.title [] [ Svg.text <| String.fromInt node.id ] ]
 
 
 view : Model -> Html Msg
 view model =
-    div []
-        [ viewControls model.nodeCountToGenerate
+    Html.div []
+        [ viewControls model
         , viewGraph model
         ]
 
 
-viewControls : Int -> Html Msg
-viewControls nodeCountToGenerate =
-    div []
-        [ span [] [ text "Generate random tree with " ]
-        , input
+viewControls : Model -> Html Msg
+viewControls model =
+    Html.div []
+        [ Html.span [] [ Html.text "Generate random tree with " ]
+        , Html.input
             [ type_ "number"
-            , HA.min "0"
+            , HA.min "1"
             , HA.max "1000"
-            , value <| String.fromInt nodeCountToGenerate
+            , value <| String.fromInt model.nodeCountToGenerate
             , HA.style "width" "3em"
             , onInput ChangeGeneratorParam
             ]
             []
-        , span [] [ text " nodes " ]
-        , button [ onClick GenerateNewTree ] [ text "Go!" ]
+        , Html.span [] [ Html.text " nodes " ]
+        , Html.button [ onClick GenerateNewTree ] [ Html.text "Go!" ]
+        , Html.label []
+            [ Html.input
+                [ type_ "checkbox"
+                , HA.checked model.showNodeLabels
+                , onClick ToggleNodeLabels
+                ]
+                []
+            , Html.text "Show node labels"
+            ]
+        , Html.div []
+            [ Html.a [ HA.href "https://en.wikipedia.org/wiki/Pr%C3%BCfer_sequence" ] [ Html.text "Prüfer sequence" ]
+            , Html.text <| " of this tree is: " ++ String.join "," (List.map String.fromInt model.pruefer)
+            ]
         ]
 
 
 viewGraph : Model -> Svg Msg
 viewGraph model =
-    svg
+    let
+        nodeView =
+            if model.showNodeLabels then
+                labeledNode
+
+            else
+                simpleNode
+    in
+    Svg.svg
         [ width "100vw"
         , height "100vh"
         , SA.style "position:absolute;top:0;z-index:-1;width:100vw"
@@ -399,8 +458,9 @@ viewGraph model =
                 )
                 mouseWheelDecoder
         ]
-        [ g [ class "links" ] <| List.map (linkElement model.graph) <| Graph.edges model.graph
-        , g [ class "nodes" ] <| List.map nodeElement <| Graph.nodes model.graph
+        [ Svg.style [] [ Svg.text "text{user-select:none;}" ]
+        , Svg.g [ class "links" ] <| List.map (linkElement model.graph) <| Graph.edges model.graph
+        , Svg.g [ class "nodes" ] <| List.map nodeView <| Graph.nodes model.graph
         ]
 
 
